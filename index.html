@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>校務提案追蹤平台</title>
+    
+    <!-- 引入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- 引入 React 和 ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    
+    <!-- 引入 Babel -->
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        /* 設定全域基礎字體為 14px */
+        html, body {
+            font-size: 14px;
+        }
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        .fade-in { animation: fadeIn 0.4s ease-in-out; }
+        .slide-up { animation: slideUp 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        
+        .school-bg {
+            background-color: #f0f2f5;
+            background-image: 
+                linear-gradient(rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.94)),
+                url('https://images.unsplash.com/photo-1562774053-701939374585?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80');
+            background-size: cover;
+            background-position: center;
+        }
+
+        .arrow-top::before {
+            content: "";
+            position: absolute;
+            top: -5px;
+            left: 50%;
+            margin-left: -5px;
+            width: 10px;
+            height: 10px;
+            background: white;
+            border-left: 1px solid #e5e7eb;
+            border-top: 1px solid #e5e7eb;
+            transform: rotate(45deg);
+        }
+
+        .glow-text { text-shadow: 0 0 10px rgba(59, 130, 246, 0.3); }
+        .appeal-glow { 
+            box-shadow: 0 0 15px rgba(249, 115, 22, 0.3); 
+            border: 2px solid #fb923c !important; 
+        }
+        
+        .content-board {
+            height: calc(100vh - 280px);
+            scroll-behavior: smooth;
+        }
+
+        /* 自定義捲軸 */
+        .content-board::-webkit-scrollbar {
+            width: 6px;
+        }
+        .content-board::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        .content-board::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+
+        /* 管考時間軸樣式 */
+        .deadline-dot {
+            width: 14px; height: 14px; border-radius: 50%; 
+            position: absolute; top: -5px;
+            background-color: #e2e8f0; border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .deadline-active { background-color: #3b82f6; }
+        .deadline-warning { background-color: #ef4444; }
+        .deadline-success { background-color: #22c55e; }
+        
+        /* 覆議時間軸樣式 */
+        .appeal-dot {
+            width: 16px; height: 16px; border-radius: 50%;
+            position: absolute; top: -6px;
+            background-color: #fff; border: 3px solid #cbd5e1;
+            z-index: 10;
+        }
+        .appeal-active { border-color: #f97316; background-color: #ffedd5; }
+        .appeal-line {
+            position: absolute; top: 0; left: 0; height: 4px; border-radius: 4px;
+            background: linear-gradient(to right, #f97316, #fdba74);
+            transition: width 1s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useMemo } = React;
+
+        // ==========================================
+        // 1. 全域常數與資料解析
+        // ==========================================
+        const STATUS_STATS = {
+            pending: { label: '待審核', color: 'bg-gray-100 text-gray-600', barColor: 'bg-gray-400', defaultProgress: 10 },
+            reviewing: { label: '研議中', color: 'bg-blue-100 text-blue-600', barColor: 'bg-blue-500', defaultProgress: 45 },
+            negotiating: { label: '協商中', color: 'bg-purple-100 text-purple-600', barColor: 'bg-purple-500', defaultProgress: 75 },
+            resolved: { label: '已完成', color: 'bg-green-100 text-green-600', barColor: 'bg-green-500', defaultProgress: 100 },
+            reconsidering: { label: '覆議中', color: 'bg-orange-100 text-orange-600', barColor: 'bg-orange-500', defaultProgress: 85 }
+        };
+        const STATUS_ORDER = Object.keys(STATUS_STATS);
+
+        function parseCSVData(text) {
+            const lines = text.trim().split('\n');
+            if (lines.length < 2) return [];
+            const header = lines[0].trim().split(',');
+            return lines.slice(1).map(line => {
+                const row = line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(v => {
+                    let s = v.trim();
+                    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1);
+                    return s.replace(/""/g, '"');
+                });
+                const obj = {};
+                header.forEach((h, i) => {
+                    let value = row[i];
+                    if (h === 'timeline' || h === 'comments') { try { value = JSON.parse(value || "[]"); } catch (e) { value = []; } }
+                    if (h === 'anon' || h === 'isSensitive') value = value === 'true';
+                    if (h === 'votes' || h === 'progress' || h === 'id') value = Number(value);
+                    obj[h] = value;
+                });
+                return obj;
+            });
+        }
+
+        const getDeadlineStatus = (item) => {
+            if (!item || !item.date) return { isOverdue: false, stage: 0, msg: "", diffDays: 0 };
+            const startDate = new Date(item.date.split(' ')[0].replace(/\//g, '-'));
+            const now = new Date();
+            const diffTime = Math.abs(now - startDate);
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+            
+            let stage = 0; let isOverdue = false; let msg = "";
+            if (diffDays > 14 && item.status === 'pending') { stage = 1; isOverdue = true; msg = "階段一 (14天) 逾期：未初步回覆。"; }
+            else if (diffDays > 28 && (item.status === 'pending' || item.status === 'reviewing')) { stage = 2; isOverdue = true; msg = "階段二 (28天) 逾期：未進入協商階段。"; }
+            else if (diffDays > 180 && item.status !== 'resolved') { stage = 3; isOverdue = true; msg = "階段三 (半年) 逾期：案件尚未結案。"; }
+            return { isOverdue, stage, msg, diffDays };
+        };
+
+        const DEFAULT_USERS_CSV = `username,password,name,role,department
+superadmin,super123,總管理員,superadmin,校務決議中心
+admin,admin123,系統管理員,admin,資訊中心
+teacher1,t123,王老師,teacher,教務處
+s1101,s1101,林同學,student,資工系
+s1102,s1102,陳同學,student,電機系`;
+
+        const DEFAULT_USERS = parseCSVData(DEFAULT_USERS_CSV);
+
+        const DEFAULT_ISSUES_CSV = `id,caseId,title,cat,content,author,anon,status,votes,date,deadline,appealDate,appealReason,timeline,isSensitive,progress,type,location,deviceType,proposalGoal,proposalBg,comments
+1,2023-1218-001,延長圖書館開放時間,教務,期中考週讀書空間不足。,林同學,false,negotiating,156,2023/12/18,2023/12/25,,,"[{""status"":""pending"",""label"":""待審核"",""date"":""2023/12/18 09:30"",""note"":""系統自動收件""},{""status"":""reviewing"",""label"":""研議中"",""date"":""2023/12/19 14:00"",""note"":""權益部確認受理""},{""status"":""negotiating"",""label"":""協商中"",""date"":""2023/12/20 10:15"",""note"":""已排程與館長會議""}]",false,75,general,,,,,"[{""author"":""王老師"",""role"":""teacher"",""content"":""同學好，目前正在協調人力。""}]"
+2,2023-1219-099,飲水機故障報修,總務,發現三教噴水高度不足。,匿名,true,pending,12,2023/12/19,2023/12/26,,,"[{""status"":""pending"",""label"":""待審核"",""date"":""2023/12/19 10:00"",""note"":""已收到維修通報""}]",false,10,maintenance,第三教學大樓,飲水機,,,"[]"`;
+
+        const DEFAULT_NOTICES_CSV = `id,title,content,date,priority,author
+1,系統升級公告,本週末將進行系統維護作業，屆時請留意。,2023/12/18,high,admin`;
+
+        // ==========================================
+        // 2. 圖示與基礎組件
+        // ==========================================
+        const Icon = ({ path, className, size = 20 }) => (
+            <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+                {path}
+            </svg>
+        );
+        
+        const icons = {
+            user: <><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></>,
+            lock: <><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></>,
+            shield: <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>,
+            logOut: <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>,
+            wrench: <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>,
+            gavel: <><path d="M14 5l6.5 6.5"/><path d="M2 14.5l6.5 6.5"/><path d="M20 20L10 10"/><path d="M22 2l-3.5 3.5"/><path d="M11 5l-7 7 2.5 2.5 7-7L11 5z"/></>,
+            plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+            message: <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>,
+            trash: <><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></>,
+            bell: <><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></>,
+            logo: <><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></>,
+            hash: <><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></>,
+            clock: <><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,
+            send: <><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></>,
+            fileText: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></>,
+            chevronLeft: <polyline points="15 18 9 12 15 6"/>,
+            chevronRight: <polyline points="9 18 15 12 9 6"/>,
+            alertTriangle: <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,
+            check: <polyline points="20 6 9 17 4 12"/>
+        };
+
+        const Clock = () => {
+            const [time, setTime] = useState(new Date());
+            useEffect(() => {
+                const t = setInterval(() => setTime(new Date()), 1000);
+                return () => clearInterval(t);
+            }, []);
+            return (
+                <div className="flex flex-col items-end px-3 border-l border-slate-700/50">
+                    <span className="text-[14px] text-slate-400 font-mono tracking-tighter uppercase font-bold">{time.getFullYear()}/{String(time.getMonth()+1).padStart(2,'0')}/{String(time.getDate()).padStart(2,'0')}</span>
+                    <span className="text-xl font-bold text-blue-100 font-mono leading-none glow-text">{String(time.getHours()).padStart(2,'0')}:{String(time.getMinutes()).padStart(2,'0')}:{String(time.getSeconds()).padStart(2,'0')}</span>
+                </div>
+            );
+        };
+
+        const EditableLogo = ({ src, onUpload, canEdit }) => {
+            const fileInputRef = useRef(null);
+            const [loadError, setLoadError] = useState(false);
+            useEffect(() => setLoadError(false), [src]);
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => { onUpload(e.target.result); setLoadError(false); };
+                    reader.readAsDataURL(file);
+                }
+            };
+            return (
+                <div 
+                    className={`w-32 h-14 bg-white text-blue-900 flex items-center justify-center shadow-lg border-2 border-blue-100 overflow-hidden relative group flex-shrink-0 rounded-xl ${canEdit ? 'cursor-pointer' : ''}`}
+                    onClick={() => canEdit && fileInputRef.current.click()}
+                >
+                    {src && !loadError ? <img src={src} alt="Logo" className="w-full h-full object-cover" onError={() => setLoadError(true)} /> : (
+                        <div className="flex flex-col items-center justify-center w-full h-full bg-slate-50">
+                            <Icon path={icons.logo} size={28} />
+                            {canEdit && <span className="text-[10px] text-gray-400 mt-0.5 font-bold uppercase tracking-tight text-center leading-none">更換 LOGO</span>}
+                        </div>
+                    )}
+                    {canEdit && <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />}
+                </div>
+            );
+        };
+
+        const Modal = ({ config }) => {
+            if (!config) return null;
+            return (
+                <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[100] fade-in backdrop-blur-sm p-4 text-left">
+                    <div className="bg-white rounded-3xl shadow-2xl p-7 w-full max-w-sm slide-up border border-gray-100 overflow-hidden relative text-slate-800">
+                        <div className="flex items-center gap-3 mb-4 text-slate-800 font-bold text-xl">
+                            <div className={`p-2 rounded-xl text-white ${config.type === 'alert' || config.type === 'confirm' ? 'bg-red-500' : 'bg-blue-500'}`}>
+                                <Icon path={config.type === 'alert' || config.type === 'confirm' ? icons.trash : icons.info} size={24} />
+                            </div>
+                            {config.title}
+                        </div>
+                        <p className="text-gray-600 leading-relaxed mb-8 whitespace-pre-wrap text-[14px]">{config.message}</p>
+                        <div className="flex justify-end gap-3 text-[14px]">
+                            {(config.type === 'confirm' || config.onCancel) && <button onClick={config.onCancel} className="px-5 py-2.5 text-gray-500 font-bold hover:bg-gray-100 rounded-2xl transition-colors">取消</button>}
+                            <button onClick={config.onConfirm} className={`px-7 py-2.5 text-white font-bold rounded-2xl shadow-lg active:scale-95 transition-all ${config.type === 'confirm' ? 'bg-red-600 hover:bg-red-700' : 'bg-slate-900 hover:bg-slate-800'}`}>確定</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 3. 業務元件
+        // ==========================================
+        
+        const DeadlineTimeline = ({ item }) => {
+            const { isOverdue, stage, diffDays } = getDeadlineStatus(item);
+            const isResolved = item.status === 'resolved';
+
+            return (
+                <div className="mb-8 bg-slate-50 p-6 rounded-2xl border border-slate-200">
+                    <h5 className="font-black text-slate-400 mb-6 uppercase tracking-widest flex items-center gap-2 text-[14px]">
+                        <Icon path={icons.clock} size={16}/> 一般時效管考 (已立案 {diffDays} 天)
+                    </h5>
+                    <div className="relative h-2 bg-gray-200 rounded-full mt-2 mb-8 mx-4 text-left font-bold">
+                        <div className={`deadline-dot left-[10%] ${diffDays > 14 ? (stage >= 1 ? 'deadline-warning' : 'deadline-success') : 'bg-gray-300'}`}></div>
+                        <div className="absolute top-6 left-[10%] -translate-x-1/2 text-[14px] text-gray-500 whitespace-nowrap">2週 (初覆)</div>
+                        <div className={`deadline-dot left-[30%] ${diffDays > 28 ? (stage >= 2 ? 'deadline-warning' : 'deadline-success') : 'bg-gray-300'}`}></div>
+                        <div className="absolute top-6 left-[30%] -translate-x-1/2 text-[14px] text-gray-500 whitespace-nowrap">4週 (進度)</div>
+                        <div className={`deadline-dot left-[90%] ${isResolved ? 'deadline-success' : (diffDays > 180 ? 'deadline-warning' : 'bg-gray-300')}`}></div>
+                        <div className={`absolute top-6 left-[90%] -translate-x-1/2 text-[14px] whitespace-nowrap font-bold ${!isResolved && diffDays > 180 ? 'text-red-600' : 'text-gray-500'}`}>
+                            {isResolved ? "半年 (已結案)" : "半年 (未結案)"}
+                        </div>
+                        <div className={`absolute top-0 left-0 h-full rounded-full transition-all duration-1000 ${isOverdue ? 'bg-red-500' : 'bg-blue-500'}`} style={{width: `${Math.min((diffDays / 180) * 100, 100)}%`}}></div>
+                    </div>
+                </div>
+            );
+        };
+
+        const AppealTimeline = ({ item }) => {
+            if (!item.appealDate) return null;
+            const appealStart = new Date(item.appealDate.split(' ')[0].replace(/\//g, '-'));
+            const now = new Date();
+            const diffTime = now - appealStart;
+            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24)); 
+            let phase = 0; if (diffDays <= 7) phase = 1; else if (diffDays <= 14) phase = 2; else phase = 3;
+            return (
+                <div className="mb-8 bg-orange-50 p-6 rounded-2xl border border-orange-200 shadow-sm relative overflow-hidden text-[14px]">
+                    <h5 className="font-black text-orange-800 mb-8 uppercase tracking-widest flex items-center gap-2 relative z-10 text-left font-bold"><Icon path={icons.gavel} size={18}/> 覆議雙週管考 (Day {diffDays})</h5>
+                    <div className="relative h-2 bg-orange-200 rounded-full mt-2 mb-8 mx-4 z-10 font-bold">
+                        <div className={`appeal-dot left-[0%] appeal-active`}></div>
+                        <div className="absolute top-6 left-[0%] -translate-x-1/2 text-[14px] text-orange-700 whitespace-nowrap">覆議發起</div>
+                        <div className={`appeal-dot left-[50%] ${phase >= 2 ? 'appeal-active' : 'bg-white border-orange-200'}`}></div>
+                        <div className="absolute top-6 left-[50%] -translate-x-1/2 text-[14px] text-orange-700 whitespace-nowrap">公告期滿 (7天)</div>
+                        <div className={`appeal-dot left-[100%] ${phase >= 3 ? 'appeal-active' : 'bg-white border-orange-200'}`}></div>
+                        <div className="absolute top-6 left-[100%] -translate-x-1/2 text-[14px] text-orange-700 whitespace-nowrap">審議結束 (14天)</div>
+                        <div className="appeal-line" style={{width: `${Math.min((diffDays / 14) * 100, 100)}%`}}></div>
+                    </div>
+                </div>
+            );
+        };
+
+        const TimelineSection = ({ item, hasAccess }) => {
+            const scrollRef = useRef(null);
+            const scroll = (dir) => { if (scrollRef.current) scrollRef.current.scrollBy({ left: dir === 'left' ? -300 : 300, behavior: 'smooth' }); };
+            return (
+                <div className="mb-4 group/timeline relative">
+                    <h4 className="font-bold text-gray-400 mb-4 uppercase tracking-widest flex items-center gap-2 px-1 text-left text-[14px]"><Icon path={icons.message} size={16}/> 案件處理歷程</h4>
+                    <div className="relative">
+                        <button onClick={() => scroll('left')} className="absolute left-0 top-1/2 -translate-y-1/2 z-20 bg-white/95 p-2 rounded-full shadow-xl border border-gray-100 text-blue-600 flex items-center justify-center backdrop-blur-md opacity-0 group-hover/timeline:opacity-100 transition-all active:scale-95"><Icon path={icons.chevronLeft} size={20}/></button>
+                        <button onClick={() => scroll('right')} className="absolute right-0 top-1/2 -translate-y-1/2 z-20 bg-white/95 p-2 rounded-full shadow-xl border border-gray-100 text-blue-600 flex items-center justify-center backdrop-blur-md opacity-0 group-hover/timeline:opacity-100 transition-all active:scale-95"><Icon path={icons.chevronRight} size={20}/></button>
+                        <div ref={scrollRef} className="flex items-start overflow-x-auto pb-6 scrollbar-hide space-x-6 pl-1 pt-3 scroll-smooth">
+                            <div className="absolute top-[34px] left-0 w-full h-0.5 bg-gray-200/60 -z-10"></div> 
+                            {item.timeline.map((ev, idx) => {
+                                const isLast = idx === item.timeline.length - 1;
+                                const isRec = ev.status === 'reconsidering';
+                                return (
+                                    <div key={idx} className="flex flex-col items-center min-w-[160px] max-w-[220px] flex-shrink-0 group relative text-left">
+                                        <div className="mb-2 text-center font-bold text-gray-500 text-[14px]">{ev.date.split(' ')[0]}</div>
+                                        <div className={`w-3.5 h-3.5 rounded-full border-2 border-white shadow-md z-10 box-content transition-all ${isLast ? 'bg-blue-600 scale-125 ring-4 ring-blue-100' : isRec ? 'bg-orange-500' : 'bg-gray-300'}`}></div>
+                                        <div className={`mt-3 bg-white p-3 rounded-2xl border border-gray-100 shadow-sm text-center w-full relative arrow-top ${isRec ? 'bg-orange-50 border-orange-100' : ''}`}>
+                                            <div className={`absolute -top-1.5 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-white border-t border-l border-gray-100 transform rotate-45 ${isRec ? 'bg-orange-50 border-orange-100' : ''}`}></div>
+                                            <div className={`font-bold mb-1 flex items-center justify-center gap-1 text-[14px] ${isRec ? 'text-orange-700' : 'text-slate-800'}`}>{isRec && <Icon path={icons.gavel} size={12}/>}{ev.label}</div>
+                                            <div className="text-[12px] text-gray-400 font-mono mb-1">{ev.date.split(' ')[1]}</div>
+                                            <div className="text-gray-600 leading-relaxed text-left break-words text-[14px]">{hasAccess ? ev.note : "内容受隱私保護"}</div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 4. 登入畫面
+        // ==========================================
+        const LoginScreen = ({ onLogin, userDb, customLogo, notices }) => {
+            const [username, setUsername] = useState("");
+            const [password, setPassword] = useState("");
+            const [error, setError] = useState("");
+            const handleLogin = (e) => {
+                e.preventDefault();
+                const u = userDb.find(x => x.username === username && x.password === password);
+                if (u) onLogin(u); else setError("帳號或密碼錯誤");
+            };
+            return (
+                <div className="min-h-screen school-bg flex flex-col font-sans text-slate-800 text-[14px]">
+                    <div className="bg-slate-900 text-white shadow-xl p-4 flex justify-between items-center border-b border-white/5 shrink-0">
+                        <div className="flex items-center gap-4 text-left">
+                            <EditableLogo src={customLogo} onUpload={()=>{}} canEdit={false} />
+                            <div><div className="font-bold tracking-widest text-lg uppercase tracking-wider">校務提案追蹤平台</div><div className="text-[12px] text-slate-400 font-medium">Issue Tracking System</div></div>
+                        </div>
+                        <Clock />
+                    </div>
+                    <div className="flex-1 flex items-center justify-center p-6">
+                        <div className="bg-white/80 backdrop-blur-md w-full max-w-4xl rounded-[3rem] shadow-2xl overflow-hidden flex flex-col md:flex-row slide-up border border-white/50 min-h-[600px]">
+                            <div className="md:w-1/2 bg-slate-50/50 p-12 border-r border-gray-100 overflow-y-auto scrollbar-hide">
+                                <h3 className="text-2xl font-bold text-slate-700 mb-8 flex items-center gap-3 text-left font-black"><Icon path={icons.bell} className="text-blue-600" size={28} /> 最新公告</h3>
+                                <div className="space-y-6">
+                                    {notices.map(n => (
+                                        <div key={n.id} className="p-6 rounded-3xl bg-white shadow-md border-l-4 border-blue-500 text-left font-bold">
+                                            <div className="font-bold text-base mb-2 font-black">{n.title}</div>
+                                            <div className="text-sm text-gray-500 leading-relaxed font-medium">{n.content}</div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                            <div className="md:w-1/2 p-12 md:p-16 bg-white/40 flex flex-col justify-center text-center">
+                                <h2 className="text-3xl font-black text-slate-800 tracking-tight mb-10">身份驗證登入</h2>
+                                <form onSubmit={handleLogin} className="space-y-8 font-bold">
+                                    <input type="text" value={username} onChange={e => setUsername(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-white border border-gray-200 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all shadow-sm font-bold" placeholder="請輸入學號或帳號" />
+                                    <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full px-6 py-4 rounded-2xl bg-white border border-gray-200 outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all shadow-sm font-bold" placeholder="請輸入密碼" />
+                                    {error && <div className="text-red-600 font-bold bg-red-50 py-4 rounded-2xl border border-red-100">{error}</div>}
+                                    <button className="w-full bg-slate-900 text-white font-bold py-4 rounded-2xl shadow-xl transition-all active:scale-95 uppercase tracking-widest text-[14px]">進入平台系統</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // 5. 主應用程式畫面
+        // ==========================================
+        const MainApp = ({ currentUser, onLogout, userDb, setUserDb, issues, setIssues, notices, setNotices, showAlert, showConfirm, showModal, customLogo, setCustomLogo }) => {
+            const [view, setView] = useState('board');
+            const [expandedId, setExpandedId] = useState(null);
+            const [searchQuery, setSearchQuery] = useState("");
+            const [appealTargetId, setAppealTargetId] = useState(null);
+            const [form, setForm] = useState({ title: "", cat: "生活", content: "", anon: false, isSensitive: false, location: "", deviceType: "", priority: "一般", proposalGoal: "", proposalBg: "", appealReason: "" });
+            const [adminUpdate, setAdminUpdate] = useState({ status: 'reviewing', note: '', progress: 45 });
+            const [userTab, setUserTab] = useState('student');
+            const [newUser, setNewUser] = useState({ username: "", password: "", name: "", role: "student", department: "" });
+            
+            // 公告發布表單狀態
+            const [newNotice, setNewNotice] = useState({ title: "", content: "", priority: "normal" });
+            const [commentInput, setCommentInput] = useState("");
+
+            const isAdmin = currentUser.role === 'admin' || currentUser.role === 'superadmin';
+
+            const handleDeleteIssue = (id) => {
+                showConfirm("確定要刪除此提案嗎？此操作將永久移除所有相關歷程與留言，無法復原。", () => {
+                    setIssues(issues.filter(i => i.id !== id));
+                    if (expandedId === id) setExpandedId(null);
+                    showAlert("提案已從系統中具象化刪除。");
+                });
+            };
+
+            const handleReportSubmit = (e, type) => {
+                e.preventDefault();
+                const now = new Date();
+                const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                const d = new Date(now); d.setDate(d.getDate() + 14);
+                const deadline = `${d.getFullYear()}/${(d.getMonth()+1).toString().padStart(2,'0')}/${d.getDate().toString().padStart(2,'0')}`;
+
+                const newIssue = { 
+                    id: Date.now(), caseId: `${now.getFullYear()}-${Math.floor(Math.random()*9999).toString().padStart(4,'0')}`,
+                    ...form, author: form.anon ? "匿名" : currentUser.name, status: 'pending', progress: 10, votes: 0, date: ts.split(' ')[0], 
+                    deadline, type,
+                    timeline: [{ status: 'pending', label: "待審核", date: ts, note: `系統已受理具象化${type==='proposal'?'提案':type==='maintenance'?'報修':'通報'}` }],
+                    comments: []
+                };
+                setIssues([newIssue, ...issues]); setView('board'); setForm({ title: "", cat: "生活", content: "", anon: false, isSensitive: false, location: "", deviceType: "", priority: "一般", proposalGoal: "", proposalBg: "", appealReason: "" });
+                showAlert(`具象化提交成功！案件編號：${newIssue.caseId}`);
+            };
+
+            const handleAdminUpdate = (id) => {
+                const now = new Date();
+                const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                setIssues(issues.map(i => i.id === id ? { ...i, status: adminUpdate.status, progress: adminUpdate.progress, timeline: [...i.timeline, { status: adminUpdate.status, label: STATUS_STATS[adminUpdate.status].label, date: ts, note: adminUpdate.note }] } : i));
+                setAdminUpdate({ ...adminUpdate, note: '' });
+                showAlert("處置更新成功");
+            };
+
+            const handleAddComment = (id) => {
+                if (!commentInput.trim()) return;
+                const now = new Date(); const ts = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')} ${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}`;
+                setIssues(issues.map(i => i.id === id ? { ...i, comments: [...(i.comments || []), { author: currentUser.name, role: currentUser.role, content: commentInput, date: ts }] } : i));
+                setCommentInput("");
+            };
+
+            // 公告管理功能
+            const handlePostNotice = (e) => {
+                e.preventDefault();
+                const now = new Date();
+                const dateStr = `${now.getFullYear()}/${(now.getMonth()+1).toString().padStart(2,'0')}/${now.getDate().toString().padStart(2,'0')}`;
+                const noticeToAdd = {
+                    id: Date.now(),
+                    ...newNotice,
+                    date: dateStr,
+                    author: currentUser.name
+                };
+                setNotices([noticeToAdd, ...notices]);
+                setNewNotice({ title: "", content: "", priority: "normal" });
+                showAlert("新公告已成功發布。");
+            };
+
+            const handleDeleteNotice = (id) => {
+                showConfirm("確定要刪除此公告嗎？此操作無法復原。", () => {
+                    setNotices(notices.filter(n => n.id !== id));
+                    showAlert("公告已移除。");
+                });
+            };
+
+            const filteredIssues = issues.filter(i => !searchQuery || i.caseId.includes(searchQuery) || i.title.includes(searchQuery));
+            const deadlineStatus = (item) => getDeadlineStatus(item);
+
+            return (
+                <div className="max-w-2xl mx-auto h-screen flex flex-col p-4 md:p-6 space-y-6 fade-in text-slate-800 text-[14px]">
+                    {/* Header */}
+                    <div className="flex items-center justify-between bg-white p-4 rounded-[2rem] shadow-xl border border-gray-100 shrink-0 font-bold">
+                        <div className="flex items-center gap-3 text-left">
+                            <EditableLogo src={customLogo} onUpload={setCustomLogo} canEdit={isAdmin} />
+                            <div><div className="font-black text-slate-800 tracking-wider uppercase font-bold text-[16px]">校務提案追蹤平台</div><span className="text-[12px] px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 font-bold border border-blue-100 uppercase tracking-widest">{currentUser.role}</span></div>
+                        </div>
+                        <div className="flex items-center gap-3"><Clock /><button onClick={onLogout} className="p-2.5 bg-red-50 text-red-500 rounded-full hover:bg-red-100 active:scale-90 transition-all shadow-sm font-bold"><Icon path={icons.logOut} size={20}/></button></div>
+                    </div>
+
+                    {/* Navbar */}
+                    <div className="flex bg-white/60 backdrop-blur p-1.5 rounded-[1.5rem] shadow-inner border border-gray-100 overflow-x-auto scrollbar-hide shrink-0 font-bold">
+                        {['board', 'notices', 'submit', 'maintenance', 'proposal', 'appeal'].map(t => (
+                            <button key={t} onClick={() => { setView(t); setAppealTargetId(null); }} className={`flex-1 py-3 px-4 rounded-2xl transition-all tab-transition whitespace-nowrap font-bold ${view === t ? 'bg-slate-900 text-white shadow-xl scale-105' : 'text-gray-500 hover:bg-white'}`}>
+                                {t === 'board' ? '案件' : t === 'notices' ? '公告' : t === 'submit' ? '通報' : t === 'maintenance' ? '報修' : t === 'proposal' ? '提案' : '覆議'}
+                            </button>
+                        ))}
+                        {isAdmin && <button onClick={() => setView('users')} className={`flex-1 py-3 px-4 rounded-2xl transition-all font-bold ${view === 'users' ? 'bg-slate-900 text-white shadow-xl' : 'text-gray-500 hover:bg-white'}`}>管理</button>}
+                    </div>
+
+                    {/* Content Board */}
+                    <div className="flex-1 overflow-y-auto pr-1 scrollbar-hide content-board scroll-smooth font-bold">
+                        {view === 'board' && (
+                            <div className="space-y-4 slide-up">
+                                <div className="relative group mb-6 text-left">
+                                    <input type="text" placeholder="搜尋案件案號..." className="w-full pl-12 pr-6 py-4 rounded-3xl bg-white border-none shadow-xl outline-none focus:ring-4 focus:ring-blue-500/10 font-bold" value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+                                    <div className="absolute left-4 top-4 text-gray-400 group-focus-within:text-blue-500 transition-colors font-bold"><Icon path={icons.hash} size={20}/></div>
+                                </div>
+                                {filteredIssues.map(item => {
+                                    const isEx = expandedId === item.id; const s = STATUS_STATS[item.status];
+                                    const isAppeal = item.status === 'reconsidering';
+                                    const canDelete = isAdmin || (item.author === currentUser.name && item.status === 'pending');
+                                    const ds = deadlineStatus(item);
+
+                                    return (
+                                        <div key={item.id} className={`bg-white rounded-[2rem] shadow-sm border border-gray-50 overflow-hidden transition-all duration-500 ${isEx ? 'ring-4 ring-blue-50 shadow-2xl mb-6' : 'hover:shadow-md mb-2'} ${isAppeal ? 'appeal-glow' : ''}`}>
+                                            <div onClick={() => setExpandedId(isEx ? null : item.id)} className="p-8 cursor-pointer text-left">
+                                                <div className="flex flex-col gap-3">
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex gap-2">
+                                                            <span className={`px-3 py-1 rounded-lg font-black border uppercase font-bold ${item.type==='maintenance'?'bg-amber-50 text-amber-600 border-amber-100':'bg-blue-50 text-blue-600 border-blue-100'}`}>{item.cat}</span>
+                                                            {isAppeal && <span className="bg-orange-50 text-orange-600 px-3 py-1 rounded-lg font-black border border-orange-100 animate-pulse font-bold">覆議中</span>}
+                                                        </div>
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="bg-indigo-50 text-indigo-600 border border-indigo-100 px-2.5 py-1 rounded-md font-mono font-bold text-[13px] flex items-center gap-1 shadow-sm">
+                                                                <Icon path={icons.hash} size={12}/>{item.caseId}
+                                                            </div>
+                                                            {canDelete && <button onClick={(e)=>{e.stopPropagation(); handleDeleteIssue(item.id);}} className="text-red-400 hover:text-red-600 transition-all p-1 flex items-center gap-1 font-black"><Icon path={icons.trash} size={18}/></button>}
+                                                        </div>
+                                                    </div>
+                                                    <h3 className="font-black text-lg leading-tight text-slate-800">{item.title}</h3>
+                                                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-50">
+                                                        <div className={`px-3 py-1 rounded-full border shadow-sm font-black font-bold ${s.color}`}>{s.label}</div>
+                                                        <button 
+                                                            onClick={(e) => { if (ds.isOverdue) { e.stopPropagation(); showModal({title:"管考警示", message: ds.msg, type:'alert', onConfirm:()=>showModal(null)}); }}} 
+                                                            className={`font-bold flex items-center gap-1.5 px-4 py-2 rounded-full border transition-all whitespace-nowrap shadow-sm ${ds.isOverdue ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100' : 'bg-green-50 text-green-600 border-green-200 cursor-default'}`}
+                                                        >
+                                                            <Icon path={ds.isOverdue ? icons.alertTriangle : icons.check} size={14}/> 
+                                                            {ds.isOverdue ? `已逾期 (限期:${item.deadline})` : `時效內 (限期:${item.deadline})`}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            {isEx && (
+                                                <div className="px-8 pb-8 pt-0 border-t border-gray-50 bg-gray-50/30 slide-up text-left">
+                                                    <div className="py-5">
+                                                        <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-inner font-bold text-slate-600 leading-relaxed">
+                                                            {item.type === 'proposal' ? (
+                                                                <div className="space-y-4">
+                                                                    <div><h5 className="font-black text-blue-500 mb-1">背景現況分析</h5><p>{item.proposalBg}</p></div>
+                                                                    <div><h5 className="font-black text-blue-500 mb-1">預期效益表述</h5><p>{item.proposalGoal}</p></div>
+                                                                </div>
+                                                            ) : <p>{item.content}</p>}
+                                                        </div>
+                                                    </div>
+                                                    <DeadlineTimeline item={item} />
+                                                    <TimelineSection item={item} hasAccess={true} />
+                                                    <div className="mt-8 font-bold"><h4 className="font-bold text-gray-400 mb-4 uppercase tracking-widest flex items-center gap-2 px-1"><Icon path={icons.message} size={16}/> 意見交流區</h4><div className="bg-white/50 p-4 rounded-3xl space-y-3 mb-4 max-h-40 overflow-y-auto scrollbar-hide">{(item.comments || []).length === 0 ? <p className="text-gray-400 text-center font-bold">尚無留言意見</p> : (item.comments || []).map((c, idx) => ( <div key={idx} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100/50 flex flex-col gap-1 font-bold"><div className="flex justify-between font-black"><span className="text-blue-600">{c.author}</span><span className="text-[12px] text-gray-300 font-mono">{c.date}</span></div><p className="text-gray-600">{c.content}</p></div> ))}</div><div className="flex gap-2 font-bold"><input className="flex-1 px-5 py-3 rounded-2xl border-none bg-gray-100 font-bold outline-none focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all shadow-inner font-bold" placeholder="發表意見..." value={commentInput} onChange={e => setCommentInput(e.target.value)} /><button onClick={() => handleAddComment(item.id)} className="bg-blue-600 text-white p-3 rounded-2xl hover:bg-blue-700 active:scale-90 transition-all shadow-lg font-bold"><Icon path={icons.send} size={20}/></button></div></div>
+                                                    {isAdmin && (
+                                                        <div className="bg-slate-900 text-white p-8 rounded-[2.5rem] shadow-xl mt-6 font-bold">
+                                                            <div className="flex items-center gap-3 mb-6 font-black border-b border-white/10 pb-4 text-blue-400 text-lg font-bold"><Icon path={icons.shield} size={22}/> 行政處置面板</div>
+                                                            <div className="grid grid-cols-2 gap-6 text-[14px]">
+                                                                <div>
+                                                                    <label className="text-slate-400 block mb-2 font-black uppercase tracking-widest px-1 font-bold">階段狀態</label>
+                                                                    <select className="w-full bg-slate-800 border-none rounded-2xl p-4 font-bold outline-none cursor-pointer" value={adminUpdate.status} onChange={e => setAdminUpdate({...adminUpdate, status: e.target.value, progress: STATUS_STATS[e.target.value].defaultProgress})}>{Object.keys(STATUS_STATS).map(k => <option key={k} value={k}>{STATUS_STATS[k].label}</option>)}</select>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="text-slate-400 block mb-2 font-black uppercase tracking-widest px-1 font-bold">進度微調 ({adminUpdate.progress}%)</label>
+                                                                    <input type="range" min="0" max="100" step="5" value={adminUpdate.progress} onChange={e => setAdminUpdate({ ...adminUpdate, progress: parseInt(e.target.value) })} className="w-full h-2 mt-6 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                                                                </div>
+                                                            </div>
+                                                            <div className="mt-6 font-bold"><label className="text-slate-400 block mb-2 font-black uppercase tracking-widest px-1 font-bold">處置備註</label><textarea rows="3" className="w-full bg-slate-800 border-none rounded-2xl p-4 outline-none text-white font-bold resize-none shadow-inner focus:ring-2 focus:ring-blue-500 transition-all" placeholder="輸入處理說明..." value={adminUpdate.note} onChange={e => setAdminUpdate({...adminUpdate, note: e.target.value})}/></div>
+                                                            <button onClick={() => handleAdminUpdate(item.id)} className="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-2xl font-black transition-all active:scale-95 mt-6 shadow-lg uppercase tracking-widest font-bold">發布處置更新</button>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+
+                        {view === 'notices' && (
+                             <div className="space-y-4 slide-up text-left font-bold">
+                                {notices.map(n => (
+                                    <div key={n.id} className={`bg-white p-8 rounded-[2.5rem] shadow-xl border-l-8 ${n.priority === 'high' ? 'border-red-500' : 'border-blue-500'}`}>
+                                        <div className="text-[12px] font-black text-slate-400 mb-3 uppercase tracking-widest font-mono font-bold">{n.date} · {n.author} 發布</div>
+                                        <h3 className="font-black text-slate-800 mb-2 text-[18px] font-bold">{n.title}</h3>
+                                        <p className="text-gray-600 leading-relaxed text-[14px] font-bold">{n.content}</p>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {view === 'users' && isAdmin && (
+                            <div className="space-y-8 slide-up text-left font-black font-bold">
+                                {/* 人員權限維護 */}
+                                <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-gray-100 font-bold">
+                                    <h2 className="font-black text-2xl mb-8 flex items-center gap-4 text-slate-800"><Icon path={icons.user} size={32} className="text-blue-500"/> 校務人員權限維護</h2>
+                                    <div className="flex gap-3 mb-8 border-b pb-8 overflow-x-auto scrollbar-hide font-bold">
+                                        {['superadmin', 'admin', 'teacher', 'student'].map(r => <button key={r} onClick={() => setUserTab(r)} className={`px-5 py-3 rounded-2xl transition-all font-bold ${userTab === r ? 'bg-slate-900 text-white shadow-xl' : 'text-gray-500 hover:bg-white'}`}>{r}</button>)}
+                                    </div>
+                                    <div className="space-y-6">
+                                        <div className="grid grid-cols-[1fr,1fr,1fr,auto] gap-4 px-4 text-slate-400 text-[12px] font-black uppercase tracking-widest font-bold">
+                                            <div>帳號</div><div>姓名</div><div>單位</div><div>操作</div>
+                                        </div>
+                                        {userDb.filter(u => u.role === userTab).map((u, i) => (
+                                            <div key={i} className="grid grid-cols-[1fr,1fr,1fr,auto] gap-4 items-center bg-gray-50 p-5 rounded-2xl border border-gray-100 font-bold hover:bg-white hover:shadow-md transition-all">
+                                                <div className="font-mono text-blue-600 font-bold">{u.username}</div>
+                                                <div className="font-bold text-slate-700">{u.name}</div>
+                                                <div className="text-gray-500 text-[13px]">{u.department || '-'}</div>
+                                                <button onClick={() => { showConfirm(`確定刪除人員 ${u.name}？`, () => setUserDb(userDb.filter(x => x.username !== u.username))); }} className="text-red-400 hover:text-red-600 p-2 hover:bg-red-50 rounded-xl transition-all"><Icon path={icons.trash} size={18}/></button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="mt-10 pt-8 border-t border-gray-100 font-bold">
+                                        <h3 className="font-black text-slate-800 mb-6 flex items-center gap-2 font-bold"><Icon path={icons.plus} size={20} className="text-green-500"/> 新增人員</h3>
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <input className="px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner outline-none font-bold" placeholder="帳號" value={newUser.username} onChange={e => setNewUser({...newUser, username:e.target.value})} />
+                                            <input className="px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner outline-none font-bold" placeholder="姓名" value={newUser.name} onChange={e => setNewUser({...newUser, name:e.target.value})} />
+                                            <button onClick={() => { if(newUser.username && newUser.name) { setUserDb([...userDb, {...newUser, password: "123", role: userTab}]); setNewUser({username:"", password:"", name:"", role:"student", department:""}); showAlert("新增成功 (預設密碼 123)"); }}} className="col-span-2 bg-slate-900 text-white py-5 rounded-2xl font-black shadow-lg transition-transform active:scale-95 text-[16px] font-bold">確認新增成員</button>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* 公告管理維護 (管理員專區) */}
+                                <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-gray-100 font-bold">
+                                    <h2 className="font-black text-2xl mb-8 flex items-center gap-4 text-slate-800"><Icon path={icons.bell} size={32} className="text-orange-500"/> 公告管理維護</h2>
+                                    
+                                    {/* 公告清單管理 */}
+                                    <div className="space-y-4 mb-10 max-h-80 overflow-y-auto pr-2 scrollbar-hide">
+                                        <label className="text-slate-400 text-[12px] font-black uppercase tracking-widest px-1 block mb-2">現有公告列表 (可刪除)</label>
+                                        {notices.length === 0 ? (
+                                            <div className="text-center py-8 text-gray-400 bg-gray-50 rounded-2xl border border-dashed border-gray-200 font-bold">目前尚無公告資料</div>
+                                        ) : notices.map(n => (
+                                            <div key={n.id} className="bg-gray-50 p-5 rounded-2xl border border-gray-100 flex justify-between items-center group hover:bg-white hover:shadow-md transition-all font-bold">
+                                                <div className="text-left">
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className={`w-2 h-2 rounded-full ${n.priority === 'high' ? 'bg-red-500 animate-pulse' : 'bg-blue-500'}`}></span>
+                                                        <span className="font-black text-slate-800">{n.title}</span>
+                                                    </div>
+                                                    <div className="text-[12px] text-gray-400 font-mono">{n.date} · 發布者: {n.author}</div>
+                                                </div>
+                                                <button 
+                                                    onClick={() => handleDeleteNotice(n.id)} 
+                                                    className="text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-all p-3 bg-white rounded-xl shadow-sm hover:shadow-md border border-red-50"
+                                                >
+                                                    <Icon path={icons.trash} size={18}/>
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* 發布新公告 */}
+                                    <div className="pt-8 border-t border-gray-100 font-bold">
+                                        <h3 className="font-black text-slate-800 mb-6 flex items-center gap-2 font-bold"><Icon path={icons.plus} size={20} className="text-orange-500"/> 發布新公告內容</h3>
+                                        <form onSubmit={handlePostNotice} className="space-y-4">
+                                            <div className="grid grid-cols-3 gap-4 font-bold">
+                                                <input required className="col-span-2 px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner outline-none font-bold placeholder-gray-400 focus:bg-white focus:ring-2 focus:ring-orange-100 transition-all" placeholder="請輸入公告標題" value={newNotice.title} onChange={e => setNewNotice({...newNotice, title:e.target.value})} />
+                                                <select className="px-4 py-5 bg-gray-50 rounded-2xl border-none shadow-inner outline-none font-bold cursor-pointer hover:bg-gray-100 transition-colors" value={newNotice.priority} onChange={e => setNewNotice({...newNotice, priority:e.target.value})}>
+                                                    <option value="normal">一般優先權</option>
+                                                    <option value="high">緊急/重要公告</option>
+                                                </select>
+                                            </div>
+                                            <textarea required rows="4" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner outline-none font-bold resize-none placeholder-gray-400 focus:bg-white focus:ring-2 focus:ring-orange-100 transition-all" placeholder="請填寫公告詳細內容文字敘述..." value={newNotice.content} onChange={e => setNewNotice({...newNotice, content:e.target.value})} />
+                                            <button className="w-full bg-orange-600 text-white py-5 rounded-2xl font-black shadow-xl shadow-orange-50 transition-all active:scale-95 hover:bg-orange-700 text-[16px] uppercase tracking-widest font-bold">發布正式公告</button>
+                                        </form>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* 其他視圖保持原樣 */}
+                        {view === 'submit' && (
+                            <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-gray-50 slide-up text-center font-black font-bold">
+                                <div className="w-20 h-20 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-8 shadow-inner font-bold"><Icon path={icons.plus} size={40}/></div>
+                                <h2 className="text-2xl font-black text-slate-800 mb-10 tracking-tight font-bold">校務一般通報</h2>
+                                <form onSubmit={e => handleReportSubmit(e, 'general')} className="space-y-6 text-left font-bold">
+                                    <input required className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-black font-bold" placeholder="通報主旨" value={form.title} onChange={e => setForm({...form, title: e.target.value})} />
+                                    <textarea required rows="6" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-medium font-bold" placeholder="詳細內容敘述..." value={form.content} onChange={e => setForm({...form, content: e.target.value})} />
+                                    <button className="w-full bg-blue-600 text-white font-black py-5 rounded-2xl shadow-xl text-[16px] active:scale-95 font-bold">發布通報資料</button>
+                                </form>
+                            </div>
+                        )}
+
+                        {view === 'maintenance' && (
+                             <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-gray-50 slide-up text-slate-800 text-left font-black font-bold">
+                                <div className="flex items-center gap-4 mb-10 font-bold"><div className="p-5 rounded-3xl bg-amber-50 text-amber-600 shadow-inner font-bold"><Icon path={icons.wrench} size={36}/></div><h2 className="text-2xl font-black font-bold">設備故障報修</h2></div>
+                                <form onSubmit={e => handleReportSubmit(e, 'maintenance')} className="space-y-8 font-bold">
+                                    <input required className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-black font-bold" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="設備名稱..."/>
+                                    <div className="grid grid-cols-2 gap-6 font-bold"><input required className="px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-bold outline-none font-bold" value={form.location} onChange={e => setForm({...form, location: e.target.value})} placeholder="地點..."/><input required className="px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-bold outline-none font-bold" value={form.deviceType} onChange={e => setForm({...form, deviceType: e.target.value})} placeholder="類型..."/></div>
+                                    <textarea required rows="4" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-medium resize-none outline-none font-bold" value={form.content} onChange={e => setForm({...form, content: e.target.value})} placeholder="故障描述..."/>
+                                    <button className="w-full bg-slate-900 text-white font-black py-5 rounded-2xl shadow-xl active:scale-95 text-[16px] font-bold">提交報修單</button>
+                                </form>
+                            </div>
+                        )}
+
+                        {view === 'proposal' && (
+                            <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-gray-50 slide-up space-y-8 text-left font-black font-bold">
+                                <div className="flex items-center gap-4 border-b pb-8 font-bold"><div className="p-5 rounded-3xl bg-indigo-50 text-indigo-600 shadow-inner font-bold font-bold font-bold font-bold"><Icon path={icons.fileText} size={36} /></div><h2 className="text-2xl font-black text-slate-800 font-bold font-bold font-bold">具象化：正式提案</h2></div>
+                                <form onSubmit={(e) => handleReportSubmit(e, 'proposal')} className="space-y-8 font-bold font-bold">
+                                    <div className="space-y-2 font-bold"><label className="px-1 text-slate-400 tracking-widest uppercase font-bold">提案標題</label><input required className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-black" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="請輸入主旨..."/></div>
+                                    <div className="space-y-2 font-bold"><label className="px-1 text-slate-400 tracking-widest uppercase font-bold">現況描述</label><textarea required rows="4" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-medium resize-none font-bold" value={form.proposalBg} onChange={e => setForm({...form, proposalBg: e.target.value})} placeholder="背景說明..."/></div>
+                                    <div className="space-y-2 font-bold"><label className="px-1 text-slate-400 tracking-widest uppercase font-bold">預期效益</label><textarea required rows="4" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border-none shadow-inner font-medium resize-none font-bold" value={form.proposalGoal} onChange={e => setForm({...form, proposalGoal: e.target.value})} placeholder="效益分析..."/></div>
+                                    <button className="w-full bg-slate-900 text-white font-bold py-5 rounded-2xl shadow-xl active:scale-95 uppercase tracking-widest text-[16px] font-bold">正式提交提案</button>
+                                </form>
+                            </div>
+                        )}
+                        
+                        {view === 'appeal' && (
+                            <div className="space-y-6 slide-up text-left font-bold">
+                                {!appealTargetId ? (
+                                    <>
+                                        <div className="bg-orange-50 p-8 rounded-[2.5rem] border border-orange-100 flex items-center gap-4 shadow-sm font-black"><div className="p-3 rounded-2xl bg-orange-500 text-white shadow-lg"><Icon path={icons.gavel} size={24} /></div><div><h2 className="text-xl font-black text-orange-900 tracking-tight underline decoration-orange-300 underline-offset-4 font-bold">覆議管考專區</h2><p className="text-[12px] text-orange-600 font-bold mt-1 tracking-widest uppercase font-bold">Appeal Tracking Center</p></div></div>
+                                        <div className="grid gap-4 font-bold">
+                                            {issues.filter(i => i.status === 'reconsidering').map(item => (
+                                                <div key={item.id} className="bg-white p-8 rounded-[2.5rem] border-2 border-orange-200 shadow-xl flex flex-col gap-6 relative overflow-hidden font-bold">
+                                                    <div className="flex justify-between items-start relative z-10 font-bold"><div><div className="font-black text-slate-800 text-lg mb-1 leading-tight">{item.title}</div><div className="text-[11px] text-orange-600 font-black bg-orange-50 px-3 py-1 rounded-lg border border-orange-100 w-fit leading-none mt-2 font-bold">程序：覆議審理中</div></div></div>
+                                                    <AppealTimeline item={item} />
+                                                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-100 font-bold"><h5 className="font-black text-slate-400 mb-3 uppercase tracking-widest text-[12px] font-bold">申訴表述內容</h5><div className="font-bold text-slate-700 leading-relaxed text-[14px]">{item.timeline.find(t => t.status === 'reconsidering')?.note?.replace('具象化申訴理由：', '') || '未提供理由'}</div></div>
+                                                    <div className="mt-2 font-bold"><h4 className="font-black text-gray-400 mb-4 uppercase tracking-widest flex items-center gap-1.5 font-bold font-bold"><Icon path={icons.message} size={16}/> 覆議討論區</h4><div className="bg-gray-50 p-6 rounded-3xl space-y-3 mb-4 max-h-40 overflow-y-auto scrollbar-hide font-bold">{(item.comments || []).length === 0 ? <p className="text-gray-400 font-bold font-bold">尚無覆議意見</p> : (item.comments || []).map((c, idx) => ( <div key={idx} className="bg-white p-4 rounded-xl flex justify-between shadow-xs border border-gray-100 font-bold font-black"><span className="text-slate-600 font-bold">{c.content}</span><span className="text-[12px] text-gray-400 font-bold">{c.author}</span></div> ))}</div><div className="flex gap-3 font-bold"><input className="flex-1 px-5 py-4 rounded-2xl bg-white border border-gray-200 font-bold focus:ring-2 focus:ring-orange-100 outline-none shadow-sm font-bold" placeholder="輸入意見..." value={commentInput} onChange={e => setCommentInput(e.target.value)} /><button onClick={() => handleAddComment(item.id)} className="bg-orange-600 text-white p-4 rounded-2xl shadow-lg active:scale-95 font-bold"><Icon path={icons.send} size={20}/></button></div></div>
+                                                </div>
+                                            ))}
+                                            {issues.filter(i => (i.status === 'resolved' || i.status === 'negotiating') && i.status !== 'reconsidering' && (i.author === currentUser.name || isAdmin)).map(item => (
+                                                <div key={item.id} className="bg-white p-6 rounded-[2rem] border border-gray-100 shadow-sm flex justify-between items-center hover:bg-orange-50/20 transition-all font-bold"><div><div className="font-black text-slate-800 text-[16px] font-bold font-bold">{item.title}</div><div className="text-[12px] text-gray-400 font-bold mt-1 tracking-tighter uppercase font-bold tracking-widest uppercase font-mono font-bold">#{item.caseId} | 狀態：{STATUS_STATS[item.status].label}</div></div><button onClick={() => setAppealTargetId(item.id)} className="px-6 py-2.5 bg-orange-600 text-white rounded-2xl font-black shadow-lg active:scale-90 tracking-widest transition-transform hover:scale-105 font-bold">發起覆議</button></div>
+                                            ))}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <div className="bg-white p-10 rounded-[3rem] shadow-2xl border border-orange-200 text-sm font-bold font-bold"><button onClick={() => setAppealTargetId(null)} className="text-orange-500 font-black mb-6 flex items-center gap-1 hover:underline font-bold font-bold"><Icon path={icons.chevronLeft} size={14}/> 返回列表專區</button><h2 className="text-2xl font-black mb-8 flex items-center gap-3 font-bold font-bold font-bold"><Icon path={icons.gavel} size={28} className="text-orange-600"/> 撰寫覆議申訴理由</h2><form onSubmit={handleFinalAppeal} className="space-y-8 font-bold"><div className="bg-slate-50 p-6 rounded-3xl border border-slate-100 shadow-sm font-bold font-bold"><div className="font-black text-slate-400 mb-2 tracking-widest uppercase font-bold font-bold">對象提案案件</div><div className="font-bold text-slate-800 text-lg font-bold font-bold">{issues.find(i=>i.id===appealTargetId)?.title}</div></div><textarea required rows="6" className="w-full px-6 py-5 bg-gray-50 rounded-2xl border border-orange-100 font-bold outline-none shadow-inner focus:ring-4 focus:ring-orange-50 font-bold font-bold" value={form.appealReason} onChange={e => setForm({...form, appealReason: e.target.value})} placeholder="請詳述您認為原處置不周延處與您的具體申訴理由與訴求..."/><button className="w-full bg-orange-600 text-white font-black py-5 rounded-2xl shadow-xl shadow-orange-100 transition-transform active:scale-95 text-[16px] tracking-widest font-bold font-bold">提交正式覆議申請</button></form></div>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        const App = () => {
+            const [currentUser, setCurrentUser] = useState(null); 
+            const [modal, setModal] = useState(null);
+            const [customLogo, setCustomLogo] = useState(localStorage.getItem('customLogo_final') || "");
+            
+            const [userDb, setUserDb] = useState(() => JSON.parse(localStorage.getItem('userDb_v12_p')) || DEFAULT_USERS);
+            const [issues, setIssues] = useState(() => JSON.parse(localStorage.getItem('issues_v12_p')) || parseCSVData(DEFAULT_ISSUES_CSV));
+            const [notices, setNotices] = useState(() => JSON.parse(localStorage.getItem('notices_v12_p')) || parseCSVData(DEFAULT_NOTICES_CSV));
+
+            useEffect(() => { localStorage.setItem('userDb_v12_p', JSON.stringify(userDb)); }, [userDb]);
+            useEffect(() => { localStorage.setItem('issues_v12_p', JSON.stringify(issues)); }, [issues]);
+            useEffect(() => { localStorage.setItem('notices_v12_p', JSON.stringify(notices)); }, [notices]);
+
+            const showAlert = (m) => setModal({ title: '平台訊息', message: m, type: 'info', onConfirm: () => setModal(null) });
+            const showConfirm = (m, onC) => setModal({ title: '安全確認', message: m, type: 'confirm', onConfirm: () => { onC(); setModal(null); }, onCancel: () => setModal(null) });
+
+            return (
+                <div className="min-h-screen">
+                    {modal && <Modal config={modal} />}
+                    {currentUser ? (
+                        <MainApp 
+                            currentUser={currentUser} onLogout={() => setCurrentUser(null)} 
+                            userDb={userDb} setUserDb={setUserDb} 
+                            issues={issues} setIssues={setIssues} 
+                            notices={notices} setNotices={setNotices}
+                            showAlert={showAlert} showConfirm={showConfirm} showModal={setModal}
+                            customLogo={customLogo} setCustomLogo={(l)=>{setCustomLogo(l); localStorage.setItem('customLogo_final',l);}}
+                        />
+                    ) : (
+                        <LoginScreen onLogin={setCurrentUser} userDb={userDb} customLogo={customLogo} notices={notices} />
+                    )}
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
