@@ -52,4 +52,4 @@ timestamp
 * 如果可以再優化，我希望增加什麼功能？: 希望我的系統可以加強內部介面的美化功能。
 
 ---
-**🔗 網頁預覽網址：** [(https://pses103177.github.io/sedvvvc9/)]
+**🔗 網頁預覽網址：** [https://github.com/pses103177/sedvvvc9/tree/main?tab=readme-ov-file、[https://pses103177.github.io/sedvvvc9/)]
